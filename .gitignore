@@ -1,0 +1,46 @@
+# Rust
+/target
+Cargo.lock
+
+# Node.js (Tauri / Frontend)
+node_modules/
+dist/
+dist-tauri/
+.yarn/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+.PYTHON_HISTORY
+
+# SQLite / Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Specific
+logs/
+tmp/
