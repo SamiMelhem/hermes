@@ -1,6 +1,7 @@
 # Rust
 /target
 Cargo.lock
+LEARNING.md
 
 # Node.js (Tauri / Frontend)
 node_modules/
@@ -44,3 +45,10 @@ Thumbs.db
 # Project Specific
 logs/
 tmp/
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
