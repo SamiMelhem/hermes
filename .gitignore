@@ -2,6 +2,7 @@
 /target
 Cargo.lock
 LEARNING.md
+src/main1.rs
 
 # Node.js (Tauri / Frontend)
 node_modules/
