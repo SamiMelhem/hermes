@@ -1,3 +1,6 @@
+mod db;
+
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 
@@ -25,22 +28,39 @@ enum Commands {
     Status,
 }
 
+const DATABASE_URL: &str = "sqlite://hermes.db?mode=rwc";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Parse CLI arguments
+    // Init db
+    let pool = db::init_db(DATABASE_URL).await?;
+
+    // Parse CLI arguments
     let cli = Cli::parse();
 
-    // 2. Handle commands
+    // Handle commands
     match &cli.command {
         Commands::Run { prompt, model } => {
             let model_name = model.as_deref().unwrap_or("gpt-4o-mini");
             println!("🚀 Running prompt on {}: \"{}\"", model_name, prompt);
             
-            // This is where we'll eventually call OpenRouter
-            // For now, let's just simulate an async delay
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            
             println!("✅ Task complete.");
+
+            // save task to db
+            sqlx::query(
+                "INSERT INTO tasks (prompt, model, status, created_at)
+                 VALUES (?,?,?,?)"
+            )
+            .bind(prompt)
+            .bind(model_name)
+            .bind("Completed") // Assume done (for now)
+            .bind(Utc::now())
+            .execute(&pool)
+            .await?;
+
+            println!("✅ Task saved to database.");
+
+            // This is where we'll eventually call OpenRouter
         }
         Commands::Status => {
             println!("📡 Hermes Runtime: ONLINE");
