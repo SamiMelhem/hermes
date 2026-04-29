@@ -3,6 +3,7 @@
 Cargo.lock
 LEARNING.md
 src/main1.rs
+.env
 
 # Node.js (Tauri / Frontend)
 node_modules/
