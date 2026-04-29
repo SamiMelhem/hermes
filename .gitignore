@@ -2,6 +2,7 @@
 /target
 Cargo.lock
 LEARNING.md
+PLANS.md
 src/main1.rs
 .env
 

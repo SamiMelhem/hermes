@@ -18,6 +18,7 @@ pub struct Task {
 pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
     let pool = SqlitePool::connect(database_url).await?;
 
+    // Tasks table for high-level overview
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,6 +27,23 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
             response TEXT,
             status TEXT NOT NULL,
             created_at DATETIME NOT NULL
+        )"
+    )
+    .execute(&pool)
+    .await?;
+
+    // Messages table for full agentic history (Pi-style)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT, -- JSON string
+            tool_call_id TEXT,
+            name TEXT,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(id)
         )"
     )
     .execute(&pool)

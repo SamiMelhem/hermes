@@ -1,10 +1,20 @@
 mod db;
 mod ai;
+mod agent;
+mod tools;
+mod events;
+mod context;
 
+use std::sync::Arc;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use dotenvy::dotenv;
+use tokio::sync::mpsc;
+use agent::Agent;
+use ai::Model;
+use tools::Calculator;
+use events::AgentEvent;
 
 /// Hermes: The High-Velocity AI Harness
 #[derive(Parser)]
@@ -22,9 +32,13 @@ enum Commands {
         #[arg(short, long)]
         prompt: String,
 
-        /// Optional model override (defaults to a fast model)
+        // /// Optional model override (defaults to a fast model)
+        // #[arg(short, long)]
+        // model: Option<String>,
+
+        /// Optional task ID to resume an existing conversation
         #[arg(short, long)]
-        model: Option<String>,
+        task_id: Option<i64>,
     },
     /// Check the status of the local runtime
     Status,
@@ -36,68 +50,119 @@ const DATABASE_URL: &str = "sqlite://hermes.db?mode=rwc";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load environment variables from .env
     dotenv().ok();
-
-    // Init db
     let pool = db::init_db(DATABASE_URL).await?;
-
-    // Parse CLI arguments
     let cli = Cli::parse();
 
-    // Handle commands
     match &cli.command {
-        Commands::Run { prompt, model } => {
-            let model_name = model.as_deref().unwrap_or("gpt-4o-mini");
-            println!("🚀 Running prompt on {}: \"{}\"", model_name, prompt);
-
-            // Save initial task to db with "Processing" status
-            let result = sqlx::query(
-                "INSERT INTO tasks (prompt, model, status, created_at)
-                 VALUES (?,?,?,?)"
-            )
-            .bind(prompt)
-            .bind(model_name)
-            .bind("Processing")
-            .bind(Utc::now())
-            .execute(&pool)
-            .await?;
-
-            let task_id = result.last_insert_rowid();
-            println!("✅ Task created (ID: {}). Status: Processing", task_id);
+        Commands::Run { prompt, task_id } => {
+            let model = Model::default(); // Using the default model configuration
+            
+            let active_task_id = if let Some(id) = task_id {
+                println!("🔄 Resuming Task ID: {}", id);
+                *id
+            } else {
+                let res = sqlx::query(
+                    "INSERT INTO tasks (prompt, model, status, created_at) VALUES (?, ?, ?, ?)"
+                )
+                .bind(prompt)
+                .bind(&model.name)
+                .bind("Processing")
+                .bind(Utc::now())
+                .execute(&pool)
+                .await?;
+                res.last_insert_rowid()
+            };
 
             let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY not found");
             let ai_client = ai::AiClient::new(api_key);
             
-            println!("📡 Contacting model...");
-            let response_text = ai_client.completion(model_name, prompt).await?;
+            let mut agent = Agent::new(ai_client, model.clone(), pool.clone(), active_task_id);
+            
+            // Register tools
+            agent.add_tool(Arc::new(Calculator));
+            agent.add_tool(Arc::new(tools::FileReader));
+            agent.add_tool(Arc::new(tools::FileWriter));
+            agent.add_tool(Arc::new(tools::FileLister));
 
-            println!("\n🤖 Response:\n{}", response_text);
+            if task_id.is_some() {
+                agent.load_history().await?;
+            }
 
-            // save task to db
+            println!("🚀 Hermes running on {}: \"{}\"", model.name, prompt);
+
+            let (tx, mut rx) = mpsc::channel(100);
+
+            // Run the agent in a spawned task so we can listen to events
+            let prompt_clone = prompt.clone();
+            let pool_clone = pool.clone();
+            
+            let handle = tokio::spawn(async move {
+                agent.run_prompt(&prompt_clone, tx).await
+            });
+
+            let mut _final_response = String::new();
+
+            // Listen to events
+            while let Some(event) = rx.recv().await {
+                match event {
+                    AgentEvent::AgentStart => println!("-- Agent Started --"),
+                    AgentEvent::AgentEnd => println!("-- Agent Finished --"),
+                    AgentEvent::TurnStart => println!("🔄 Turn Started"),
+                    AgentEvent::TurnEnd => println!("🔄 Turn Ended"),
+                    AgentEvent::MsgStart => print!("🤖 Thinking..."),
+                    AgentEvent::MsgUpdate(content) => {
+                        // Clear the "Thinking..." or previous dots if we were streaming
+                        // But for now let's just print the content on a new line or same line.
+                        // Pi core often streams. For now let's just print it.
+                        println!("\n\n🤖 Agent Response:\n{}\n", content);
+                    },
+                    AgentEvent::MsgEnd => (),
+                    AgentEvent::ToolStart(name) => println!("🛠️  Tool Started: {}", name),
+                    AgentEvent::ToolEnd(result) => {
+                        println!("✅ Tool Ended.");
+                        _final_response = result; // Hack: keep last tool result if no LLM response follows
+                    },
+                    AgentEvent::Error(err) => println!("❌ Error: {}", err),
+                }
+            }
+
+            let _result = handle.await??;
+
             sqlx::query(
-                "INSERT INTO tasks (prompt, model, response, status, created_at)
-                 VALUES (?,?,?,?,?)"
+                "UPDATE tasks SET response = ?, status = ? WHERE id = ?"
             )
-            .bind(prompt)
-            .bind(model_name)
-            .bind(&response_text)
-            .bind("Completed") // Assume done (for now)
-            .bind(Utc::now())
-            .execute(&pool)
+            .bind("Completed (Check history for full details)")
+            .bind("Completed")
+            .bind(active_task_id)
+            .execute(&pool_clone)
             .await?;
 
-            println!("\n✅ Task saved to database.");
+            println!("\n✅ Task {} finalized.", active_task_id);
         }
         Commands::Status => {
             println!("📡 Hermes Runtime: ONLINE");
-            println!("📦 Database: SQLite (local)");
+            println!("🔧 Core: Rust (Pi-style Event-Driven Loop)");
         }
         Commands::History => {
-            // Add logic for retrieving previous conversatio history
+            use sqlx::Row;
+            let rows = sqlx::query(
+                "SELECT id, prompt, model, response, status, created_at FROM tasks ORDER BY created_at DESC LIMIT 10"
+            )
+            .fetch_all(&pool)
+            .await?;
+            
+            println!("{:<5} | {:<20} | {:<10} | {:<10}", "ID", "Prompt", "Model", "Status");
+            println!("{:-<50}", "");
+            for row in rows {
+                let id: i64 = row.get("id");
+                let prompt: String = row.get("prompt");
+                let model: String = row.get("model");
+                let status: String = row.get("status");
+                println!("{:<5} | {:<20} | {:<10} | {:<10}", id, &prompt[..prompt.len().min(20)], model, status);
+            }
         }
     }
 
     Ok(())
 }
-
