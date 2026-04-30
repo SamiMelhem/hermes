@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
             let pool_clone = pool.clone();
             
             let handle = tokio::spawn(async move {
-                agent.run_prompt(&prompt_clone, tx).await
+                agent.prompt(&prompt_clone, tx).await
             });
 
             let mut _final_response = String::new();

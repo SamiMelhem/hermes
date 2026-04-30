@@ -33,11 +33,11 @@ impl ContextManager {
                         name: None,
                     });
                 }
-                AgentMessage::Llm(content, tool_calls) => {
+                AgentMessage::Assistant(am) => {
                     llm_messages.push(LlmMessage {
                         role: Role::Assistant,
-                        content: content.clone(),
-                        tool_calls: tool_calls.clone(),
+                        content: am.content.clone(),
+                        tool_calls: am.tool_calls.clone(),
                         tool_call_id: None,
                         name: None,
                     });

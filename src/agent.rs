@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sqlx::{SqlitePool, Row};
 use chrono::Utc;
 use tokio::sync::mpsc;
-use crate::ai::{AiClient, Model, AgentMessage, ToolResult, ToolCall};
+use crate::ai::{AiClient, Model, AgentMessage, AssistantMessage, ToolResult, ToolCall};
 use crate::tools::Tool;
 use crate::context::ContextManager;
 use crate::events::AgentEvent;
@@ -52,7 +52,10 @@ impl Agent {
                     let tool_calls_str: Option<String> = row.get("tool_calls");
                     let tool_calls: Option<Vec<ToolCall>> = tool_calls_str
                         .and_then(|tc| serde_json::from_str(&tc).ok());
-                    AgentMessage::Llm(content, tool_calls)
+                    AgentMessage::Assistant(AssistantMessage {
+                        content,
+                        tool_calls,
+                    })
                 },
                 "tool" => {
                     AgentMessage::Tool(ToolResult {
@@ -68,10 +71,30 @@ impl Agent {
         Ok(())
     }
 
+    async fn on_message_start(&self, turn_count: usize) -> Result<()> {
+        println!("🚀 [Turn {}] Starting message completion...", turn_count);
+        Ok(())
+    }
+
+    async fn on_message_end(&self, turn_count: usize) -> Result<()> {
+        println!("✅ [Turn {}] Message completion finished.", turn_count);
+        Ok(())
+    }
+
+    async fn before_tool_call(&self, call: &ToolCall) -> Result<()> {
+        println!("🛠️  [Hook] About to execute tool: {}", call.function.name);
+        Ok(())
+    }
+
+    async fn after_tool_call(&self, call: &ToolCall, result: &str) -> Result<()> {
+        println!("✅ [Hook] Tool {} finished with {} chars of output.", call.function.name, result.len());
+        Ok(())
+    }
+
     async fn save_message(&self, msg: &AgentMessage) -> Result<()> {
         let (role_str, content, tool_calls_json, tool_call_id, name) = match msg {
             AgentMessage::User(c) => ("user", Some(c.clone()), None, None, None),
-            AgentMessage::Llm(c, tc) => ("assistant", c.clone(), tc.as_ref().and_then(|t| serde_json::to_string(t).ok()), None, None),
+            AgentMessage::Assistant(am) => ("assistant", am.content.clone(), am.tool_calls.as_ref().and_then(|t| serde_json::to_string(t).ok()), None, None),
             AgentMessage::Tool(t) => ("tool", Some(t.result.clone()), None, Some(t.call_id.clone()), Some(t.name.clone())),
             AgentMessage::Artifact(a) => ("assistant", Some(a.content.clone()), None, None, None),
             AgentMessage::Notification(n) => ("system", Some(n.clone()), None, None, None),
@@ -94,31 +117,7 @@ impl Agent {
         Ok(())
     }
 
-    pub fn prompt(&mut self, text: &str) -> mpsc::Receiver<AgentEvent> {
-        let (tx, rx) = mpsc::channel(100);
-        
-        let msg = AgentMessage::User(text.to_string());
-        self.context.add_message(msg.clone());
-
-        // We need to clone things to move into the async block, or use a structured approach
-        // To keep it simple, we'll spawn a task if we can, but `self` is mutably borrowed.
-        // The Pi core often separates the runner from the state. 
-        // Let's implement a run block here and send it back.
-        // Actually, since this is a refactor, it might be easier to pass a channel sender to `run_loop`.
-        
-        let tx_clone = tx.clone();
-        
-        // This is a bit tricky with `self` mutability and async spawning. 
-        // For simplicity right now without full Arc<Mutex<Agent>>, we'll just run it synchronously
-        // inside `main` by returning `rx` and having the caller await a `run` method, 
-        // OR we return a Future that the caller awaits, while yielding events.
-        
-        // Let's change the API so `prompt` takes the sender.
-        drop(tx_clone);
-        rx
-    }
-
-    pub async fn run_prompt(&mut self, text: &str, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
+    pub async fn prompt(&mut self, text: &str, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
         let _ = tx.send(AgentEvent::AgentStart).await;
 
         let msg = AgentMessage::User(text.to_string());
@@ -153,15 +152,22 @@ impl Agent {
             
             let payload = self.context.to_llm_payload(&self.model);
             
-            // This is where "on_message_start" hook would go
+            // "on_message_start" hook
+            self.on_message_start(turn_count).await?;
 
             let response = self.client.completion(&self.model, payload, tool_definitions).await?;
             
+            // Tells user that the model is thinking
             let _ = tx.send(AgentEvent::MsgUpdate("Thinking...".to_string())).await;
 
             // Handle the response
             // Save and add assistant response to history (always, to keep track of tool calls)
-            let msg = AgentMessage::Llm(response.content.clone(), response.tool_calls.clone());
+            let msg = AgentMessage::Assistant(AssistantMessage
+            {
+                content: response.content.clone(),
+                tool_calls: response.tool_calls.clone(),
+            });
+
             self.save_message(&msg).await?;
             self.context.add_message(msg);
 
@@ -171,6 +177,7 @@ impl Agent {
             }
 
             // This is where "on_message_end" hook would go
+            self.on_message_end(turn_count).await?;
 
             if let Some(tool_calls) = &response.tool_calls {
                 // Hack to add the tool call to history so next completion knows it happened
@@ -181,12 +188,13 @@ impl Agent {
                     let _ = tx.send(AgentEvent::ToolStart(call.function.name.clone())).await;
                     
                     // "before_tool_call" hook
+                    self.before_tool_call(call).await?;
                     
                     let tool_result = self.execute_tool_call(call).await?;
                     
-                    // "on_tool_execution" hook (handled within execute)
                     // "after_tool_call" hook
-                    
+                    self.after_tool_call(call, &tool_result).await?;
+
                     let _ = tx.send(AgentEvent::ToolEnd(tool_result.clone())).await;
 
                     let tool_msg = AgentMessage::Tool(ToolResult {

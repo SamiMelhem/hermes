@@ -2,6 +2,21 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantMessage {
+    pub content: Option<String>,
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AgentMessage {
+    User(String),
+    Assistant(AssistantMessage),
+    Tool(ToolResult),
+    Artifact(ArtifactData),
+    Notification(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelCost {
     pub input_1m: f64,
@@ -61,15 +76,6 @@ pub struct ToolResult {
     pub call_id: String,
     pub name: String,
     pub result: String,
-}
-
-#[derive(Debug, Clone)]
-pub enum AgentMessage {
-    User(String),
-    Llm(Option<String>, Option<Vec<ToolCall>>),
-    Tool(ToolResult),
-    Artifact(ArtifactData),
-    Notification(String),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
